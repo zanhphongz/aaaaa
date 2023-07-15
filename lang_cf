@@ -1,0 +1,69 @@
+lang_conf: {
+
+  lang_model_data: [
+    {
+      name: DrivePRO,
+      columns: ['お客さまの声', '修理内容/結果', '現車点検内容',
+                '修理内容/結果', '現車点検内容', '根本原因:作りこみ要因',
+                '根本原因:見逃し要因', '対策:作りこみ対策', '対策:見逃し対策'],
+    },
+  ],
+
+  # 内部形式に変換したデータを保存するディレクトリ
+  bin_dir: bin,
+
+  stop_words: ['(', ')', '[', ']', ',', '.', ':', '-', ';', '#',
+               '&', '-', '•', "''", '``', '–', '’', '”', '“', '/', '*',
+               '='],
+  
+  meaningless_words_reg: ['[\S\d]{1,}-\S-[\S\d]{1,}-[\S\d]{1,}', '.*\.jpg','.*\.jpeg','.*\.png'],
+
+  domain_common_words: [
+    customer,
+    customers,
+    cust,
+    client,
+    technician,
+    confirm,
+    state,
+    n't,
+    complain,
+    complaint,
+    vehicle,
+    feedback,
+    report,
+    would,
+    could,
+    c,
+    s,
+    wont,
+    "'s",
+    '1',
+    '2',
+    '3',
+    '4',
+    '5',
+    '6',
+    '7',
+    '8',
+    '9',
+    '0',
+    incident,
+    turn,
+    dtcst,
+    chec,
+    dtcs,
+    adjuk,
+    c3+,
+    start,
+    # drive,
+    # p044b-00,
+    # p0404-00,
+    # test,
+    # concern,
+    # repair,
+    # verity,
+    ],
+
+}
+
