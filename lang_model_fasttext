@@ -1,0 +1,129 @@
+from lang_model import LangModel
+
+import fasttext
+import os
+import numpy as np
+
+from logging import getLogger, config
+logger = getLogger(os.path.basename(__file__))
+
+
+class LangModelFasttext(LangModel):
+
+    def __init__(self, domain_name, stop_words=[], meaningless_words_reg=[], domain_common_words=[], remove_verb=False, abbs_dict=None, clear_cache=False) -> None:
+        super().__init__(domain_name, stop_words, meaningless_words_reg, domain_common_words, remove_verb, abbs_dict, clear_cache)
+
+    def get_lang_name(self):
+        return 'fasttext'
+
+    def learn_sub(self, data_for_model):
+
+        fasttext_file = os.path.join('bin', 'tmp_fasttext.txt')
+        os.makedirs(os.path.dirname(fasttext_file), exist_ok=True)
+
+        with open(fasttext_file, mode='w') as f:
+            for ss in data_for_model:
+                f.write(' '.join(ss))
+                f.write('\n')
+            
+        return fasttext.train_unsupervised(fasttext_file, model='skipgram')
+
+
+    def save_model_sub(self, model_file):
+        self.model.save_model(model_file)
+
+    def load_model(self, model_file):
+        self.model = fasttext.load_model(model_file)
+
+
+    def most_similar(self, w, topn=10):
+        res = self.model.get_nearest_neighbors(w,topn)
+        res = list(map(lambda x:(x[1], x[0]), res))
+        return res
+
+    def calc_score_sub(self, s1, s2, option=''):
+
+        if len(s1) == 0 or len(s2) == 0:
+            return 0
+
+
+        # s1.sort(key=lambda x: np.linalg.norm(self.model.get_word_vector(x)), reverse=True)
+        # s1 = s1[:120]
+
+        # s2.sort(key=lambda x: np.linalg.norm(self.model.get_word_vector(x)), reverse=True)
+        # s2 = s2[:120]
+
+
+        # our1 = self.our_get_sentence_vector(s1)
+        # our2 = self.our_get_sentence_vector(s2)
+
+        # return self.cos_similarity(our1, our2)
+
+        s1 = ' '.join(s1)
+        s2 = ' '.join(s2)
+
+        v1 = self.model.get_sentence_vector(s1) #nhan gia tri bieu dien vecto model là AI chứa dữ liệu train
+        v2 = self.model.get_sentence_vector(s2) #nhan gia tri bieu dien vecto
+
+        return self.cos_similarity(v1, v2)
+
+    def get_word_vector(self, w):
+        return self.model.get_word_vector(w)
+
+
+    def our_get_sentence_vector(self, word_list):
+        dim = self.model.get_dimension()
+        
+        word_vec_sum =np.zeros(dim)
+        num_valid = 0
+        for word in word_list:
+            word_vec = self.model.get_word_vector(word)
+            if np.all(word_vec == 0):
+                continue
+            val = np.sqrt(np.dot(word_vec, word_vec))
+            word_vec_sum += word_vec/val
+            num_valid += 1
+
+        if num_valid != 0:
+            word_vec_sum /= num_valid
+
+        return word_vec_sum
+
+
+    def test(self):
+
+        s1 = 'smell'
+        s2 = 'oil'
+
+        v1 = self.model.get_sentence_vector(s1)
+        v2 = self.model.get_sentence_vector(s2)
+
+        val = self.cos_similarity(v1, v2)
+
+        print(f'val = {val}')
+
+        results = []
+
+        sorted_list = sorted(self.words.items(), key=lambda x:x[1], reverse=True)
+        print(type(sorted_list))
+        print(sorted_list[0])
+        print(sorted_list[1])
+
+
+        for i in range(1000):
+            v0 = self.model.get_sentence_vector(sorted_list[i][0])
+            val = self.cos_similarity(v1, v0)
+            results.append((sorted_list[i][0], val))
+
+
+        sorted_result = sorted(results, key=lambda x:x[1], reverse=True)
+
+        for i in range(10):
+            print(sorted_result[i])
+
+
+    def get_vector_size(self):
+        return self.model.get_dimension()
+
+    def get_word_vector(self, word):
+        return self.model.get_word_vector(word)
