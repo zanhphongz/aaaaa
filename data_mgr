@@ -1,0 +1,379 @@
+import pandas as pd
+import os
+import glob
+import unicodedata
+import pickle
+import yaml
+from fta import FTA
+from logging import getLogger, config
+logger = getLogger(os.path.basename(__file__))
+with open(r'drivepro_dm_conf.yaml', encoding='utf_8_sig') as file:
+    dm_yaml = yaml.safe_load(file)
+try:
+    import boto3
+except:
+    pass
+
+class DataManager:
+
+    def __init__(self, dm_conf, reload=False) -> None:
+        '''
+        データソースから言語モデル学習用、および適合先（対策情報）のデータを読み込み、内部形式に変換する。
+
+        Parameters
+        -----------
+        dm_conf : yaml形式
+            設定情報
+
+        reload : Bool, default False
+            False (デフォルト)の場合、すでに内部形式に変換済みのデータがあればそれを読み込む（高速）
+            Trueの場合、内部形式に変換済みのデータのあるなしにかかわらず、再読込、変換する。
+            データに追加や変更があった場合は、Trueにして再読込、変換する必要がある。
+        -----------
+        '''
+
+        if dm_conf == '':
+            self.load_drive_data(reload=False)
+            return
+
+        self.process_list = {
+            'normalize': self.process_normalize,
+            'jp2en': self.process_jp2en,
+        }
+
+        self.dm_conf = dm_conf
+        try:
+            self.translate = boto3.client('translate')
+        except:
+            pass
+
+        self.load_des_data(reload=reload)
+        self.merge()
+
+
+        if self.dm_conf.get('fta_list', '') != '':
+            self.load_fta_data(reload=reload)
+
+
+    def merge(self):
+        merge_list = self.dm_conf.get('merge_list', [])
+        for m in merge_list:
+            main_name = m['main_name']
+            sub_name = m['sub_name']
+            main_key = m['main_key']
+            sub_key = m['sub_key']
+            columns = m['columns'].copy()
+            agg_func = m['how']
+            columns_sub_key = columns+[sub_key]
+            df_tmp = self.data[sub_name][columns_sub_key]
+            if agg_func=='max':
+                df_tmp = df_tmp[columns_sub_key].groupby(sub_key)
+                df_tmp = df_tmp.max().reset_index()
+            elif agg_func=='min':
+                df_tmp = df_tmp[columns_sub_key].groupby(sub_key)
+                df_tmp = df_tmp.max().reset_index()
+            elif  agg_func=='concat':
+                df_tmp[columns] = df_tmp[columns].astype(str).copy()
+                df_tmp = df_tmp[columns_sub_key].groupby(sub_key)
+                df_tmp_list = []
+                for c in columns:
+                    df_tmp_list.append(df_tmp[c].apply(list).apply(lambda x:sorted(x)).apply(';'.join))
+                df_tmp = pd.concat(df_tmp_list, axis=1).reset_index()
+            else:
+                logger.error(f'When using merge_list, set "how" in the config file from min, max, concat. Your "how" value is {agg_func}.')
+                exit()
+            self.data[main_name] = pd.merge(
+                self.data[main_name],
+                df_tmp,
+                left_on=main_key,
+                right_on=sub_key,
+                how='left')
+
+
+    def concat_sheets(self, files, sheet_name):
+        dfs = []
+        for f in files:
+            if f.endswith('.csv'):
+                tmp_df = pd.read_csv(f, encoding='utf_8_sig')
+            else:
+                tmp_df = pd.read_excel(f, sheet_name=sheet_name)
+            dfs.append(tmp_df)
+        df_all = pd.concat(dfs).reset_index()
+        return df_all
+
+        
+    def load_files(self, files, sheet_name=''):
+        dfs = []
+        for f in files:
+            if f.endswith('.csv'):
+                tmp_df = pd.read_csv(f, encoding='utf_8_sig')
+            else:
+                tmp_df = pd.read_excel(f, sheet_name=sheet_name)
+            dfs.append(tmp_df)
+        df_all = pd.concat(dfs).reset_index()
+        return df_all
+
+        
+    def get_drive_data(self):
+        return self.data
+
+
+    def apply_process(self, process_name, df):
+        return self.process_list[process_name](df)
+
+
+    '''半角カタカナを全角カタカナに変換
+    '''
+    def process_normalize(self, df):
+
+        def normalize_text(text):
+            if not type(text) is str:
+                return text
+            return unicodedata.normalize('NFKC', text)
+
+        df = df.applymap(normalize_text)
+        df.columns = map(normalize_text, df.columns)
+
+        return df
+
+    def process_jp2en(self, df):
+        SRC_LANG ='ja' 
+        TRG_LANG = 'en'
+        def get_translate_text(text):
+            if text == '':
+                return ''
+            if not type(text) is str:
+                return ''
+            if len(text) > 4900:
+                return text
+            response = self.translate.translate_text(
+                Text=text,
+                SourceLanguageCode=SRC_LANG,
+                TargetLanguageCode=TRG_LANG
+            )
+            logger.debug(f'in: {text}, out: {response["TranslatedText"]}')
+            return response['TranslatedText']
+        df = df.applymap(get_translate_text)
+        return df
+
+
+    def jp2en(self, text):
+
+        def normalize_text(text):
+            if not type(text) is str:
+                return text
+
+            return unicodedata.normalize('NFKC', text)
+
+        SRC_LANG ='ja' 
+        TRG_LANG = 'en'
+
+        if text == '':
+            return ''
+
+        if not type(text) is str:
+            return ''
+
+        text = normalize_text(text)
+
+        if len(text) > 4900:
+            return text
+
+        # translate = boto3.client('translate')
+        response = self.translate.translate_text(
+            Text=text,
+            SourceLanguageCode=SRC_LANG,
+            TargetLanguageCode=TRG_LANG
+        )
+
+        logger.debug(f'in: {text}, out: {response["TranslatedText"]}')
+        return response['TranslatedText']
+
+
+    # 半角カタカナを全角カタカナに
+    def normalize_text(self, text):
+
+        if not type(text) is str:
+            return text
+
+        return unicodedata.normalize('NFKC', text)
+
+
+    def load_fta_data(self, reload=False):
+        pkl_dir = 'bin'
+        self.fta_df = {}
+        self.fta_tree = {}
+        print('in fta_loader')
+        print(f"{self.dm_conf['fta_list']=}")
+        for fta_conf in self.dm_conf['fta_list']:
+            fta_name = fta_conf['name']
+            path = fta_conf['path']
+            start_row = fta_conf.get('start_row', 0)
+            pkl_file_df = os.path.join(pkl_dir, fta_name + '_df.pkl')
+            pkl_file_tree = os.path.join(pkl_dir, fta_name + '_tree.pkl')
+            pkl_exists = os.path.exists(pkl_file_df) and os.path.exists(pkl_file_tree)
+            if (not pkl_exists) or reload == True:
+                df_fta = pd.read_excel(path, header=start_row, dtype='string', na_filter=False)
+                start_col = fta_conf.get('start_col', 0)
+                end_col = fta_conf.get('end_col', 0) + 1
+                end_row = fta_conf.get('end_row', 0)
+                if end_row != 0:
+                    df_fta = df_fta.iloc[:end_row, start_col:end_col]
+                else:
+                    df_fta = df_fta.iloc[:, start_col:end_col]
+                df_fta = df_fta.applymap(self.normalize_text)
+                cols = df_fta.columns
+                for c in cols:
+                    c_en = c + '_en'
+                    df_fta[c_en] = df_fta[c].map(self.jp2en)
+                self.fta_df[fta_name] = df_fta
+                fta_tree = FTA()
+                fta_tree.construct(df_fta.filter(like='en'))
+                self.fta_tree[fta_name] = fta_tree
+                with open(pkl_file_df, 'wb') as f:
+                    pickle.dump(df_fta, f)
+                with open(pkl_file_tree, 'wb') as f:
+                    pickle.dump(fta_tree, f)
+            else:
+                with open(pkl_file_df, 'rb') as f:
+                    self.fta_df[fta_name] = pickle.load(f)
+                with open(pkl_file_tree, 'rb') as f:
+                    self.fta_tree[fta_name] = pickle.load(f)
+
+
+
+
+    def load_des_data(self, reload=False):
+        pkl_dir = self.dm_conf.get('bin_dir', 'bin')
+        self.data = {}
+        print("asdasdasd")
+        for d_source in self.dm_conf['des_data_list']:
+            pkl_file = os.path.join(pkl_dir, d_source['name'] + '.pkl')
+            pkl_exists = os.path.exists(pkl_file)
+
+            if (not pkl_exists) or reload == True:
+                # (re)load from raw csv/excel files and store to pkl
+                path = d_source['path']
+                if os.path.isdir(path):
+                    # for mutiple files
+                    files = glob.glob(os.path.join(path, '*'))
+                    sheet_name = d_source.get('sheet', '')
+                    df = self.load_files(files, sheet_name=sheet_name)
+                    dir_name = os.path.dirname(pkl_file)
+                    os.makedirs(dir_name, exist_ok=True)
+                else:
+                    # for single file
+                    sheet_name = d_source.get('sheet', '')
+                    df = self.load_files([d_source['path']], sheet_name=sheet_name)
+                    # print(df)
+                if 'process' in d_source:
+                    for p in d_source['process']:
+                        df = self.apply_process(p, df)
+
+                if 'jp2en' in d_source:
+                    for p in d_source['jp2en']:
+                        df[p] = df[p].map(self.jp2en)
+                with open(pkl_file, 'wb') as f:
+                    pickle.dump(df, f)
+                self.data[d_source['name']] = df
+                
+            else:
+                with open(pkl_file, 'rb') as f:
+                    self.data[d_source['name']] = pickle.load(f)
+        
+
+    def load_drive_data(self, reload=False):
+
+        data_dir = 'data'
+        data_sources = [
+            # (ディレクトリ名, シート名)
+            ('PRO', 'PRO情報'), 
+            ('TR', 'TR情報'),
+            ('CUR', ''),
+            ]
+
+        self.data = {}
+
+        for d_source in data_sources:
+
+            pkl_file = os.path.join('bin', d_source[0] + '.pkl')
+            file_exists = os.path.exists(pkl_file)
+
+            if (not file_exists) or reload == True:
+                # (re)load from raw csv/excel files and store to pkl
+                if d_source[0] == 'CUR' and d_source[1] == '':
+                    tmp_dir = os.path.join(data_dir, '*.csv')
+                else:
+                    tmp_dir = os.path.join(data_dir, d_source[0], '*')
+                files = glob.glob(tmp_dir)
+                # pprint.pprint(files)
+                df_all = self.concat_sheets(files, d_source[1])
+
+                dir_name = os.path.dirname(pkl_file)
+                os.makedirs(dir_name, exist_ok=True)
+
+                with open(pkl_file, 'wb') as f:
+                    pickle.dump(df_all, f)
+
+                self.data[d_source[0]] = df_all
+
+            else:
+                with open(pkl_file, 'rb') as f:
+                    self.data[d_source[0]] = pickle.load(f)
+
+
+    def display_data(self, d_name=''):
+
+        if d_name != '':
+            print(self.data[d_name])
+        else:
+            print(self.data)
+
+    def display_fta(self, d_name=''):
+
+        if d_name != '':
+            print(self.fta_tree[d_name].print())
+        else:
+            print(self.fta_df)
+
+
+    def load_code_list(self):
+        pass
+
+
+    def info(self):
+        print('data in data mgr')
+        for k, v in self.data.items():
+            print(f'{k}, num: {len(v)}')
+
+
+    def test(self):
+        df = self.data['PRO']
+        info_no = set(df['情報No.'])
+
+        ids = ['NNA-CAR-21-00452', 'NNA-PRO-20-02123', 'NA-PIR-2019-01691', 'NA-PRO-2019-04354', ]
+
+        for id in ids:
+            if id in info_no:
+                ret = True
+            else:
+                ret = False
+            print(f'{id}: {ret}')
+
+
+        a = df[df['情報No.'].isin(ids)]
+        print(a)
+        a.to_csv('a.csv', encoding='utf_8_sig')
+
+
+    def to_csv(self, name, csv_name):
+
+        self.data[name].to_csv(csv_name, encoding='utf_8_sig')
+
+
+
+
+if __name__ == '__main__':
+
+    data_mgr = DataManager(dm_yaml['dm_conf'], reload=True)
+
