@@ -1,0 +1,59 @@
+{
+    version: 1,
+    disable_existing_loggers: false,
+    formatters: {
+        for_console: {
+            format: '%(filename)s:%(lineno)s %(funcName)s [%(levelname)s]: %(message)s',
+        },
+        for_file: {
+            format: '%(asctime)s %(filename)s:%(lineno)s %(funcName)s [%(levelname)s]: %(message)s',
+        },
+    },
+    handlers: {
+        consoleHandler: {
+            class: logging.StreamHandler,
+            level: INFO,
+            formatter: for_console,
+            stream: ext://sys.stdout
+        },
+        fileHandler: {
+            class: logging.FileHandler,
+            level: DEBUG,
+            formatter: for_file,
+            filename: log.txt,
+            mode: w,
+        }
+    },
+    loggers: {
+        __main__: {
+            level: DEBUG,
+            handlers: [consoleHandler, fileHandler],
+            propagate: false
+        },
+        lang_model: {
+            level: DEBUG,
+            handlers: [consoleHandler, fileHandler],
+            propagate: false
+        },
+        data_mgr: {
+            level: DEBUG,
+            handlers: [consoleHandler, fileHandler],
+            propagate: false
+        },
+        quality_analyzer: {
+            level: DEBUG,
+            handlers: [consoleHandler, fileHandler],
+            propagate: false
+        },
+        lang_mgr: {
+            level: DEBUG,
+            handlers: [consoleHandler, fileHandler],
+            propagate: false
+        },
+    },
+    root: {
+        level: WARNING,
+        handlers: [consoleHandler, fileHandler],
+        propagate: false
+    }
+}
