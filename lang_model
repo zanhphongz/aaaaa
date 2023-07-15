@@ -1,0 +1,478 @@
+from math import isnan
+import pandas as pd
+import nltk
+from nltk.corpus import stopwords
+
+from nltk.stem.wordnet import WordNetLemmatizer as WNL
+from nltk import stem
+
+from collections import defaultdict
+
+import os
+import re
+import pickle
+
+import numpy as np
+import statistics
+
+from logging import getLogger, config
+logger = getLogger(os.path.basename(__file__))
+
+
+
+class LangModel:
+
+    def __init__(self, domain_name, stop_words=[], meaningless_words_reg=[], domain_common_words=[], remove_verb=True, abbs_dict=None, clear_cache=False) -> None:
+
+        nltk_data = [
+            ('tokenizers', 'punkt'),  #分かち書きに必要
+            ('taggers', 'averaged_perceptron_tagger'), #品詞タグつけに必要
+            ('corpora', 'wordnet'), #lemmatizeレマ化に必要
+            ('corpora', 'omw-1.4'), #lemmatizeレマ化に必要
+            ('corpora', 'stopwords'),
+        ]
+
+        for dir, file in nltk_data:
+            try:
+                nltk.data.find(os.path.join(dir, file))
+            except:
+                nltk.download(file)
+
+        self.domain_name = domain_name
+        self.stop_words = stop_words
+        self.meaningless_words_reg = meaningless_words_reg
+        self.domain_common_words = domain_common_words
+        self.abbs_dict = abbs_dict
+        self.remove_verb = remove_verb
+
+        self.replace_count = 0
+        self.replace_count_all = 0
+
+        self.preprocess_cache = self.load_cache()
+        if clear_cache:
+            self.preprocess_cache = {}
+        self.use_cache = True
+
+    def get_cache_file_name(self):
+        return os.path.join('bin', self.domain_name + '_' + self.get_lang_name() + '_cache.bin')
+
+
+    def save_cache(self):
+        cache_file_name = self.get_cache_file_name()
+        with open(cache_file_name, 'wb') as f:
+            pickle.dump(self.preprocess_cache, f)
+
+
+    def load_cache(self):
+        cache_file_name = self.get_cache_file_name()
+
+        if os.path.exists(cache_file_name):
+            with open(cache_file_name, 'rb') as f:
+                return pickle.load(f)
+        else:
+            return {}
+
+
+    def set_domain_common_words(self, w):
+        self.domain_common_words = w
+
+    def get_lang_name(self):
+        pass
+
+
+    def get_word_vector(self, w):
+        pass
+
+
+    def preprocess(self, s):
+
+        if self.use_cache:
+            if s in self.preprocess_cache.keys():
+                return self.preprocess_cache[s]
+
+        s_out = self.tokenize_sentence(s) #goi ham tookenize_sentence de xu ly du lieu
+
+        if self.domain_common_words != []:
+            s_out = self.remove_words(s_out, self.domain_common_words)
+
+        if self.meaningless_words_reg != []:
+            s_out = self.remove_words_reg(s_out, self.meaningless_words_reg)
+
+
+        if self.use_cache:
+            self.preprocess_cache[s] = s_out
+
+
+        return s_out
+
+
+    def calc_score(self, s1, s2, option=''):
+
+        s1 = self.preprocess(s1)
+        s2 = self.preprocess(s2)
+
+
+        # remove repeated words
+        s1_tmp = list(set(s1))
+        s2_tmp = list(set(s2))
+
+        # threshold = 1.7
+        # s1_tmp = list(filter(lambda x:np.linalg.norm(self.model.get_word_vector(x))>threshold, s1_tmp))
+        # s2_tmp = list(filter(lambda x:np.linalg.norm(self.model.get_word_vector(x))>threshold, s2_tmp))
+
+        val = self.calc_score_options(s1_tmp, s2_tmp, option)
+
+        return val, ' '.join(s1), ' '.join(s2)
+
+
+    def calc_score_options(self, s1, s2, option):
+
+        if option == '':
+            return self.calc_score_sub(s1, s2, option)
+        elif option == 'op1':
+            return self.calc_op1(s1, s2)
+
+
+    def calc_op1(self, words1, words2):
+
+
+        # wv1 = [self.get_word_vector(x)/np.linalg.norm(self.get_word_vector(x)) for x in words1]
+        # wv2 = [self.get_word_vector(x)/np.linalg.norm(self.get_word_vector(x)) for x in words2]
+
+        wv1 = [self.get_word_vector(x) for x in words1]
+        wv2 = [self.get_word_vector(x) for x in words2]
+
+        # total_val = 0
+        vals = []
+        for v1 in wv1:
+            max_val = -1000
+            for v2 in wv2:
+                val = self.cos_similarity(v1, v2)
+
+                if max_val < val:
+                    max_val = val
+
+            # total_val += max_val
+            vals.append(max_val)
+
+        vals.sort(reverse=True)
+        vals = vals[:10]
+
+        return statistics.mean(vals)
+
+        # return total_val / len(wv1)
+        
+
+
+    def remove_words(self, src_tokens, r_words):
+
+        new_tokens = []
+        for t in src_tokens:
+            if t in r_words:
+                continue
+            new_tokens.append(t)
+
+        return new_tokens
+
+    def remove_words_reg(self, src_tokens, r_words_reg):
+
+        new_tokens = []
+        for t in src_tokens:
+            skip = False
+            for p in r_words_reg:
+                regex = re.compile(p)
+                res = regex.search(rf'{t}')
+
+                if res:
+                    logger.debug('-----')
+                    logger.debug(f'{t=}')
+                    logger.debug(f'{p=}')
+
+                    skip = True
+                    break
+
+            if skip:
+                continue
+
+            new_tokens.append(t)
+
+        return new_tokens
+
+
+
+    def calc_score_sub(self, s1, s2, option=''):
+        pass
+
+    def replace_by_abbs(self, tokens):
+        new_list = []
+        for t in tokens:
+            if t in self.abbs_dict:
+                new_list += self.abbs_dict[t].split()
+                self.replace_count += 1
+            else:
+                new_list.append(t)
+            self.replace_count_all += 1
+
+        return new_list
+
+
+    def tokenize_sentence(self, sentence, to_lower=True, mode='lemma', remove_stopwords=True):
+        wnl =WNL()
+        stemmer = stem.PorterStemmer()
+        stopwords_set = set(stopwords.words('english'))
+        # stopwords_set |= set(['(', ')', '[', ']', ',', '.', ':', '-', ';', '&', '-', '•', '\'\'', '``', '–', '’', '”', '“', '/'])
+        stopwords_set |= set(self.stop_words)
+        if not type(sentence) is str:
+            # cnt_blank += 1
+            # print('blank')
+            return []
+        # sentence = sentence.replace('/', ' ')
+        tokens = nltk.word_tokenize(sentence)
+        if self.remove_verb:
+            tokens_tags = nltk.pos_tag(tokens)
+            tokens_tmp = []
+            for token_tag in tokens_tags:
+                if token_tag[1] not in  ['VB','VBD','VBG','VBN','VBP','VBZ'] :
+                    tokens_tmp.append(token_tag[0])
+                # else:
+                #     logger.debug(f'{token_tag[0]=}')
+            tokens = tokens_tmp
+        if to_lower:
+            tokens = [str.lower(x) for x in tokens]
+        if self.abbs_dict != None:
+            tokens = self.replace_by_abbs(tokens)
+        if remove_stopwords:
+            tokens = self.remove_words(tokens, stopwords_set)
+        tokens = [x.strip('.-') for x in tokens]
+        if mode == 'lemma':
+            tokens = [wnl.lemmatize(x, pos='v') for x in tokens]
+        elif mode == 'stem':
+            tokens = [stemmer.stem(x) for x in tokens]
+        else:
+            logger.error(f'unknown mode: {mode}')
+            return
+        return tokens
+
+
+    def tokenize_sentence2(self, sentence, to_lower=True, mode='lemma', remove_stopwords=True):
+
+        wnl =WNL()
+        stemmer = stem.PorterStemmer()
+
+        stopwords_set = set(stopwords.words('english'))
+        # stopwords_set |= set(['(', ')', '[', ']', ',', '.', ':', '-', ';', '&', '-', '•', '\'\'', '``', '–', '’', '”', '“', '/'])
+        stopwords_set |= set(self.stop_words)
+
+        
+        if not type(sentence) is str:
+            # cnt_blank += 1
+            # print('blank')
+            return []
+
+        # sentence = sentence.replace('/', ' ')
+        tokens = nltk.word_tokenize(sentence)
+
+
+        if to_lower:
+            tokens = [str.lower(x) for x in tokens]
+
+
+        if self.remove_verb:
+            tokens_tags = nltk.pos_tag(tokens)
+            tokens_tmp = []
+            for token_tag in tokens_tags:
+                if token_tag[1] not in  ['VB','VBD','VBG','VBN','VBP','VBZ'] :
+                    tokens_tmp.append(token_tag[0])
+                # else:
+                #     logger.debug(f'{token_tag[0]=}')
+            tokens = tokens_tmp
+
+
+        if self.abbs_dict != None:
+            tokens = self.replace_by_abbs(tokens)
+
+        
+        if remove_stopwords:
+            tokens = self.remove_words(tokens, stopwords_set)
+
+        tokens = [x.strip('.-') for x in tokens]
+
+
+        if mode == 'lemma':
+            tokens = [wnl.lemmatize(x, pos='v') for x in tokens]
+        elif mode == 'stem':
+            tokens = [stemmer.stem(x) for x in tokens]
+        else:
+            logger.error(f'unknown mode: {mode}')
+            return
+
+
+        return tokens
+
+
+    def our_get_sentence_vector(self, word_list):
+
+        sentence_vec = np.zeros(self.get_vector_size())
+
+        for word in word_list:
+            word_vec = self.get_word_vector(word)
+            sentence_vec += word_vec / np.sqrt(np.dot(word_vec, word_vec))
+
+        sentence_vec /= len(word_list)
+
+        return sentence_vec
+
+
+    def get_vector_size(self):
+        pass
+
+    def get_word_vector(self, word):
+        pass
+
+    
+
+    def learn(self, file, columns) -> None:
+        logger.info('start learn')
+
+        df = pd.read_csv(file, encoding='utf_8_sig')
+        data_for_model = []
+        original_sentences = []
+
+        self.replace_count = 0
+        self.replace_count_all = 0
+
+        for c in columns:
+            logger.debug('')
+            logger.debug(f'c_name = {c}')
+
+            self.words = defaultdict(int)
+
+            sentences = df[c].values
+            logger.debug(f'len = {len(sentences)}')
+
+            for i, s in enumerate(sentences):
+                # print(f's={s}')
+                tokens = self.tokenize_sentence(s, mode='lemma')
+                if tokens == []:
+                    continue
+
+                data_for_model.append(tokens)
+                original_sentences.append(s)
+
+                for t in tokens:
+                    self.words[t] += 1
+
+
+        self.model = self.learn_sub(data_for_model)
+
+        if self.replace_count_all != 0:
+            logger.info(f'{self.replace_count = }')
+            logger.info(f'{self.replace_count_all = }')
+            logger.info(f'replace_ratio = {self.replace_count/self.replace_count_all:.3f}')
+
+        logger.info('finish learn')
+
+
+    def cos_similarity(self, x, y):
+
+
+        a = np.dot(x, y) #tinh tong cac tich cua tung phan tu trong vecto
+        b = (np.linalg.norm(x) * np.linalg.norm(y)) #norm L2 theo pytogo tinh trung binh vecto tu nhan duoc
+
+        if b == 0:
+            # logger.error(f'zero divide')
+            return 0
+
+        return a/b
+
+
+    def learn_with_tokens(self, data_for_model) -> None:
+        self.model = self.learn_sub(data_for_model)
+
+
+    def learn_sub(self, data_for_model):
+        pass
+
+    def save_model(self, model_file):
+        dirname = os.path.dirname(model_file)
+        if dirname != '':
+            os.makedirs(dirname, exist_ok=True)
+        self.save_model_sub(model_file)
+
+    def save_model_sub(self, model_file):
+        pass
+
+    def load_model(self, model_file):
+        pass
+
+    def most_similar(self, w, topn=10):
+        pass
+
+
+
+import pickle
+from lang_model_fasttext import *
+ 
+try:
+    import boto3
+except:
+    pass
+
+def store_lang_mgr(base_name, lang_mgr):
+
+    lang_mgr.data_mgr.translate = None
+
+    key = 'fasttext'
+    if key in lang_mgr.lang_models.keys():
+
+        tmp_bin_name = base_name + '_' + key + '.bin'
+        lang_mgr.lang_models[key].save_model(tmp_bin_name)
+        lang_mgr.lang_models[key].model = None
+
+
+    tmp_bin_name = base_name + '.pkl'
+    with open(tmp_bin_name, 'wb') as f:
+        pickle.dump(lang_mgr, f)
+
+
+def load_lang_mgr(base_name):
+
+    tmp_bin_name = base_name + '.pkl'
+    with open(tmp_bin_name, 'rb') as f:
+        lang_mgr = pickle.load(f)
+
+    key = 'fasttext'
+    if key in lang_mgr.lang_models.keys():
+        print('has_fasttext')
+        tmp_bin_name = base_name + '_' + key + '.bin'
+        lang_mgr.lang_models[key].load_model(tmp_bin_name)
+
+    try:
+        lang_mgr.data_mgr.translate = boto3.client('translate')
+    except:
+        pass
+
+    return lang_mgr
+
+
+
+
+if __name__ == '__main__':
+
+
+    print('lang_model')
+
+    # lm = LangModelWord2Vec()
+    lm = LangModelFasttext()
+
+    # lm.learn('data/Drive_PRO情報_ユニオン.csv', ['お客さまの声', '不具合詳細', '修理内容/結果', '現車点検内容', '発生条件・発生現象'])
+    lm.learn('data/Drive_PRO情報_ユニオン.csv', ['お客さまの声'])
+
+
+    test_words = ['heat', 'noise', 'smell', 'brake', 'seat', 'door', 'strange', 'smoke']
+    stemmer = stem.PorterStemmer()
+
+    lm.test()
+
+
+    print('done')
