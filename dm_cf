@@ -1,0 +1,89 @@
+# DataMgr用のconf
+
+dm_conf: {
+
+  # 内部形式に変換したデータを保存するディレクトリ
+  bin_dir: bin,
+
+
+  # データソースごとに各種属性を指定。リスト形式で複数のデータソースの設定を記述する。
+  # 設定する属性値は以下の通り。
+  # name: 以後、この名前で参照する
+  # path: {単一ファイル・フォルダ} # フォルダの場合は、その下を総ざらい
+  # sheet: # xlsxの場合のシート名
+  # jp2en: # 日英翻訳する列名のリスト
+  des_data_list: [
+    {
+      name: DrivePRO,
+      path: common_data\PRO,
+      sheet: PRO情報
+    },
+
+    {
+      name: DrivePRO_adopt,
+      path: common_data\PRO,
+      sheet: 採用号機,
+    },
+
+    {
+      name: DrivePRO_report,
+      path: common_data\PRO,
+      sheet: 品報累積,
+    },
+
+    # {
+    #   name: FukenList,
+    #   path: common_data/MIS不懸_modified.xlsx,
+    #   sheet: 不懸,
+    #   jp2en: [原因, 対策, 備考]
+    # },
+
+    # {
+    #   name: DriveUnion,
+    #   path: common_data/Drive_PRO情報_ユニオン.csv,
+    # },
+  ],
+
+
+  # 2つのデータソースをマージする設定
+  # 設定する属性値は以下の通り。
+  # main_name: ここで指定するデータソースに、sub_nameで指定するデータソースのいくつかの列をマージする。
+  # sub_name: ここで指定するデータソースを、main_nameで指定するデータソースにマージする。
+  # main_key: マージする際のmain側のkey
+  # sub_key:  ージする際のsub側のkey
+  # columns: マージする列をリスト形式で記述
+  # how: sub側にkeyの重複がある場合のマージの方法を指定。指定できる値は以下の3つのいずれか。
+  #    min: 当該keyのレコードの内、最小値を採用しマージする。
+  #    max: 当該keyのレコードの内、最大値を採用しマージする。
+  #    list: 当該keyのレコードの全ての値を";"で連結する。
+  merge_list: [
+    { # DrivePRO_adoptの"採用日"の列をマージする。マージの際のkeyは"情報No."
+      # 複数ある場合は、最小値（最も古い日付）を採用する。
+      main_name: DrivePRO,
+      sub_name: DrivePRO_adopt,
+      main_key: 情報No.,
+      sub_key: 情報No.,
+      columns: ['採用日'],
+      how: 'max' # min, max, list
+    },
+    {
+      main_name: DrivePRO,
+      sub_name: DrivePRO_adopt,
+      main_key: 情報No.,
+      sub_key: 情報No.,
+      columns: ['index'],
+      how: concat # min, max, concat
+    },
+    { # DrivePRO_adoptの"VIN No."の列をマージする。マージの際のkeyは"情報No.""
+      # 複数ある場合は、全てを";"で連結したものを採用する。
+      main_name: DrivePRO,
+      sub_name: DrivePRO_report,
+      main_key: 情報No.,
+      sub_key: 情報No.,
+      columns: ['VIN No.'],
+      how: concat # min, max, concat
+    }
+
+  ]
+
+}
