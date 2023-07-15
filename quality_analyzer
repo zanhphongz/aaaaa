@@ -1,0 +1,520 @@
+import yaml
+from data_mgr import DataManager
+import os
+import pandas as pd
+import numpy as np
+from tqdm.auto import tqdm
+import re
+
+from logging import getLogger, config
+logger = getLogger(os.path.basename(__file__))
+
+
+class QualityAnalyzer:
+    '''
+    適合判定をするモジュール
+    '''
+
+    lang_models = {}
+
+
+    def __init__(self, lang_mgr, data_mgr):
+        '''
+        適合判定モジュールを初期化する。
+
+        Parameters
+        -----------
+        lang_mgr : LangManager
+            初期化済みのLangMagerを指定する。
+
+        data_mgr : DataManager
+            初期化済みのDataMagerを指定する。
+
+        -----------
+        '''
+
+        self.lang_model = {}
+        self.lang_mgr = lang_mgr
+        self.data_mgr = data_mgr
+
+
+    def set_model(self, name, model):
+        self.lang_model[name] = model
+
+
+    def evaluate_old(self, a_betalist, evaluation_conf):
+
+        # df_input = self.drive_data['PRO'].copy().reset_index()
+        df_input = self.drive_data['PRO']
+        logger.info(f'data size: {len(df_input)}')
+
+        # df_input = self.drive_data['CUR'].copy().reset_index()
+        # print(df_input)
+
+        output_labels = set()
+
+        for i, a_evaluation in enumerate(evaluation_conf):
+            logger.debug(f'evalutor: {a_evaluation}')
+
+            src_label = a_evaluation['src_label']
+            des_label = a_evaluation['des_label']
+            evaluation_mode = a_evaluation['method']
+
+            if evaluation_mode == 'str_filter':
+                beta_name = a_betalist[src_label].strip()
+                num_before = len(df_input)
+                df_input = df_input[df_input[des_label] == beta_name]
+                logger.debug(f'hit_ratio = {len(df_input)/num_before}')
+                logger.debug(f'cur_num = {len(df_input)}')
+
+            elif evaluation_mode == 'str_contain':
+                beta_name = a_betalist[src_label].strip()
+                num_before = len(df_input)
+
+                df_input = df_input[df_input[des_label].str.contains(beta_name, na=False)]
+
+                logger.debug(f'hit_ratio = {len(df_input)/num_before}')
+                logger.debug(f'cur_num = {len(df_input)}')
+
+            elif evaluation_mode == 'sentence_match':
+                s_beta = a_betalist[src_label].strip()
+
+                if not type(s_beta) is str:
+                    continue
+
+                s_beta = s_beta.replace('\n', ' ')
+                logger.debug(f'>{s_beta}<')
+
+                col_name = f'score_{i}_'
+                col_name += '_'.join(a_evaluation.values())
+                df_input[col_name] = 0
+
+                revised_des_label = des_label + '_rev'
+                if not revised_des_label in df_input.columns.values:
+                    tmp_idx = list(df_input.columns.values).index(des_label)
+                    df_input.insert(loc=tmp_idx+1, column=revised_des_label, value='')
+
+                output_labels.add(col_name)
+                output_labels.add(des_label)
+                output_labels.add(revised_des_label)
+
+                for j, d in df_input.iterrows():
+
+                    s_pro = d[des_label]
+                    if not type(s_pro) is str:
+                        continue
+
+                    s_pro = s_pro.replace('\n', ' ')
+
+                    lang_model = a_evaluation['lang_model']
+                    lang_model_option = a_evaluation.get('lang_model_option', '')
+
+                    score, s_pro_rev, _ = self.lang_model[lang_model].calc_score(s_pro, s_beta, lang_model_option)
+
+                    df_input.loc[j, col_name] = score
+                    df_input.loc[j, revised_des_label] = s_pro_rev
+
+                    # print(f'i, d = ({j}, {col_name})')
+
+            else:
+                logger.error(f'unknown evaluation mode: {evaluation_mode}')
+
+
+
+        logger.info(f'#hit = {len(df_input)}')
+
+        df_input['total'] = df_input.filter(like='score', axis=1).mean(axis=1)
+        df_input = df_input.sort_values('total', ascending=False)
+
+        # output_labels.add('total')
+        # df_input_selected = df_input[output_labels]
+
+
+        output_labels_reg = '|'.join(output_labels)
+        output_labels_reg += '(' + output_labels_reg + '_rev|total|score)'
+        print(f'{output_labels_reg=}')
+        df_input_selected = df_input.filter(regex=output_labels_reg)
+
+
+        return df_input, df_input_selected
+
+    def cal_ascii_ratio(self, text):
+
+        word_list = list(text.replace(' ',''))
+        if word_list == []:
+            return 0
+
+        is_ascii = list(map(lambda x:x.isascii() , word_list))
+        return sum(is_ascii)/len(word_list)
+
+    def _check_ymd_format(self, x):
+        try:
+            pd.to_datetime(x, format='%Y%m%d')
+            return x
+        except Exception as e:
+            logger.debug(f'message:{e}')
+            return ''
+
+    def evaluate(self, src_data, evaluation_conf): #ham lay du lieu tu file pkl dau vao va .....
+
+        des_data = evaluation_conf['des_data']
+        des_data_key = evaluation_conf['des_data_key']
+
+        df_des = self.data_mgr.data[des_data].copy() #ham lay du lieu tu data_mgr
+
+        default_lang_model = self.lang_mgr.get_default_lang_model()
+
+        # desのidを列名の冒頭に追加 #them des_id vao cot dau tien
+        df_des.columns = [des_data + '_' + x for x in df_des.columns] #doi ten columns thanh DrivePro_.....
+        des_data_key = des_data + '_' + des_data_key
+
+        logger.debug(f'data size: {len(df_des)}')
+
+        used_labels = set()
+        used_labels.add('src_id')
+        used_labels.add('des_data')
+        used_labels.add('des_id')
+
+        # df_des['des_id'] = df_des[des_data_key]
+
+
+        for a_evaluation in evaluation_conf['comparison_pairs']:
+
+            if len(df_des) == 0:
+                break
+
+            logger.debug(f'evalutor: {a_evaluation}')
+
+            src_label = a_evaluation['src_label']
+            des_label = des_data + '_' + a_evaluation['des_label']
+            evaluation_mode = a_evaluation['method']
+
+            logger.debug(f'{src_label=}')
+            logger.debug(f'{des_label=}')
+
+            if evaluation_mode == 'str_filter':
+                src_str = src_data[src_label].strip()
+                num_before = len(df_des)
+
+                filter_option = a_evaluation.get('include_blank', False)
+                if not filter_option: #so sanh giua file csv input vs file excel có sẵn. Giống nhau thì lấy
+                    df_des = df_des[df_des[des_label] == src_str]
+                else:
+                    df_des = df_des[(df_des[des_label] == src_str) | (df_des[des_label] == '')]
+
+                logger.debug(f'hit_ratio = {len(df_des)/num_before}')
+                logger.debug(f'cur_num = {len(df_des)}')
+
+            elif evaluation_mode == 'str_contain':
+                src_str = src_data[src_label].strip() #lay gia tri o file csv input
+                num_before = len(df_des)
+
+                filter_option = a_evaluation.get('include_blank', False)
+                if not filter_option:  #so sanh giua file csv input vs file excel có sẵn. Giống nhau thì lấy
+                    df_des = df_des[df_des[des_label].str.contains(src_str, na=False)]
+                else:
+                    df_des = df_des[(df_des[des_label].str.contains(src_str, na=False)) | (df_des[des_label] == '')]
+
+                logger.debug(f'hit_ratio = {len(df_des)/num_before}')
+                logger.debug(f'cur_num = {len(df_des)}')
+
+
+            elif evaluation_mode == 'date_filter':
+                # 入力の前提は, yyyy/mm/dd or yyyy/mm or yyyy/int(mm) or yyyy/int(mm)/int(dd)  or yyyy-mm-dd  or yyyy-mm   or yyyy-int(mm) or yyyy-int(mm)-int(dd) or yyyymmdd
+                src_str = str(src_data[src_label].strip())
+                num_before = len(df_des)
+                if re.search('^[0-9]{4}/[0-9]{1,2}', src_str):                #yyyy/mm/dd or yyyy/mm or yyyy/int(mm) or yyyy/int(mm)/int(dd)
+                    src_str_tmp = src_str.split('/')                          #[yyyy,mm,dd] or [yyyy,mm] or [yyyy,int(mm)] or [yyyy,int(mm),int(dd)]
+                    src_str_tmp = list(map(lambda x:x.zfill(2), src_str_tmp)) #[yyyy,mm,dd] or [yyyy,mm] 
+                    src_str = ''.join(src_str_tmp)                            #yyyymmdd or yyyymm 
+                elif re.search('^[0-9]{4}-[0-9]{1,2}',src_str):
+                    src_str_tmp = src_str.split('-')
+                    src_str_tmp = list(map(lambda x:x.zfill(2), src_str_tmp))
+                    src_str = ''.join(src_str_tmp)    
+                elif re.search('^[0-9]{6}',src_str):
+                    pass
+                src_str_size = 8
+                src_str = src_str.ljust(src_str_size-1, '0').ljust(src_str_size, '1') #yyyymmdd or yyyymm01
+                src_str = src_str[:src_str_size]
+                if self._check_ymd_format(src_str)!='':
+                    df_des[f'{des_label}_tmp'] = df_des[des_label].astype(str)
+
+                    df_dicts = df_des.to_dict(orient='records')
+
+                    for _, df_dict in enumerate(df_dicts):
+                        if re.search('^[0-9]{4}/[0-9]{1,2}', df_dict[f'{des_label}_tmp']):
+                            df_dict[f'{des_label}_tmp'] = df_dict[f'{des_label}_tmp'].split('/')
+                            df_dict[f'{des_label}_tmp'] = list(map(lambda x: x.zfill(2), df_dict[f'{des_label}_tmp'])) 
+                            df_dict[f'{des_label}_tmp'] = ''.join(df_dict[f'{des_label}_tmp']) 
+                        elif re.search('^[0-9]{4}-[0-9]{1,2}', df_dict[f'{des_label}_tmp']):
+                            df_dict[f'{des_label}_tmp'] = df_dict[f'{des_label}_tmp'].split('-')
+                            df_dict[f'{des_label}_tmp'] =list(map(lambda x: x.zfill(2),  df_dict[f'{des_label}_tmp'])) 
+                            df_dict[f'{des_label}_tmp'] =''.join( df_dict[f'{des_label}_tmp']) 
+                        else:
+                            pass
+                    df_des[f'{des_label}_tmp'] = pd.DataFrame.from_dict(df_dicts).set_index(df_des.index)[f'{des_label}_tmp']
+                    df_des[f'{des_label}_tmp'] = df_des[f'{des_label}_tmp'].apply(lambda x:x.ljust(src_str_size-1, '0').ljust(src_str_size, '1')[:src_str_size] )
+
+                    df_des[f'{des_label}_tmp_check'] = df_des[f'{des_label}_tmp'].apply(self._check_ymd_format)
+
+                    if a_evaluation.get('inequality_sign')=='>':
+                        df_des = df_des[ (src_str>df_des[f'{des_label}_tmp'])|(df_des[f'{des_label}_tmp_check']=='')]
+                    elif  a_evaluation.get('inequality_sign')=='<':
+                        df_des = df_des[ (src_str<df_des[f'{des_label}_tmp'])|(df_des[f'{des_label}_tmp_check']=='')]
+                    elif  a_evaluation.get('inequality_sign')=='<=':
+                        df_des = df_des[ (src_str<=df_des[f'{des_label}_tmp'])|(df_des[f'{des_label}_tmp_check']=='')]
+                    elif  a_evaluation.get('inequality_sign')=='>=':
+                        df_des = df_des[ (src_str>=df_des[f'{des_label}_tmp'])|(df_des[f'{des_label}_tmp_check']=='')]
+                    elif  a_evaluation.get('inequality_sign')=='=':
+                        df_des = df_des[ (src_str==df_des[f'{des_label}_tmp'])|(df_des[f'{des_label}_tmp_check']=='')]
+                    else:
+                        logger.error(f'When using date_filter, set inequality_sign in the config file from >,>=,=,<=,< . Your inequality_sign value is {a_evaluation.get("inequality_sign")}.')
+                        exit()
+
+                    del df_des[f'{des_label}_tmp'],df_des[f'{des_label}_tmp_check']
+
+                if num_before!=0:
+                    logger.debug(f'hit_ratio = {len(df_des)/num_before}')
+                else:
+                    logger.debug(f'hit_ratio = {len(df_des)}')
+
+
+            elif evaluation_mode == 'sentence_match':
+                    #gan ten cac cot co trong file yaml , cot nay chua diem so danh gia????
+                col_name = f'score_{src_label}_{des_data}_{a_evaluation["des_label"]}'
+                df_des[col_name] = 0
+
+                src_str = src_data[src_label] #lay file csv
+
+                if not type(src_str) is str:
+                    continue
+
+                src_str = src_str.strip()
+
+                src_str = src_str.replace('\n', ' ')
+                logger.debug(f'>{src_str}<')
+
+                    #ten cot co duoi _rev
+                des_label_rev = des_label + '_rev'
+                if not des_label_rev in df_des.columns.values:
+                    tmp_idx = list(df_des.columns.values).index(des_label)
+                    df_des.insert(loc=tmp_idx+1, column=des_label_rev, value='')
+
+                used_labels.add(col_name)
+                used_labels.add(des_label)
+                used_labels.add(des_label_rev)
+
+                for j, d in df_des.iterrows():
+
+                    des_str = d[des_label] # lay o file excel
+                    if not type(des_str) is str:
+                        continue
+
+                    if self.cal_ascii_ratio(des_str) < 0.9:
+                        continue
+
+                    des_str = des_str.replace('\n', ' ')
+
+                    lang_model = a_evaluation.get('lang_model', default_lang_model)
+                    lang_model_option = a_evaluation.get('lang_model_option', '')
+
+                    # lang_model_option = 'op1'
+
+                    score, src_str_rev, des_str_rev = self.lang_mgr.lang_models[lang_model].calc_score(src_str, des_str, lang_model_option)
+
+
+                    if score == 0:
+                        continue
+
+                    # df_des.loc[j, 'des_id'] = d[des_data_key]
+                    #gan gia tri vao cac o cell trong file output
+                    df_des.loc[j, col_name] = score
+                    df_des.loc[j, des_label_rev] = des_str_rev
+
+            else:
+                logger.error(f'unknown evaluation mode: {evaluation_mode}')
+                exit()
+
+        df_des['des_id'] = df_des[des_data_key]  # gan gia tri cot des_id = column 情報No
+
+        logger.debug(f'#hit = {len(df_des)}')
+
+        return df_des, used_labels #file chua du lieu , ten cot da dc gan
+
+
+    def overall_evaluate(self, df_src, evaluation_conf): #them gia tri cac cot SRC_, gia tri cot score
+
+        evaluation_list = evaluation_conf['evaluation_list']
+        key_column = evaluation_conf['src_data_key']
+
+        default_lang_model = self.lang_mgr.get_default_lang_model()
+
+        # gather used columns in src_data (betalist)
+        src_used_labels = set()
+        for a_eval in evaluation_list:
+            for a_comp in a_eval['comparison_pairs']:
+                if a_comp['method'] == 'sentence_match':
+                    src_used_labels.add(a_comp['src_label'])
+
+        logger.debug(f'{src_used_labels=}')
+
+
+        dfs = []
+        used_labels = set()
+        for _, src_data in tqdm(df_src.iterrows(), total=len(df_src)):
+            for a_eval in evaluation_list:
+                df_out, tmp_labels = self.evaluate(src_data, a_eval) #file chua du lieu, ten cot
+                if len(df_out) == 0:
+                    logger.warn(f'no record hit: {src_data[key_column]}')
+                    break
+                df_out['des_data'] = a_eval['des_data'] #gan cot des_data = DrivePro
+                df_out['src_id'] = src_data[ke-y_column] # lay gia tri cot src_id trong file csv dau vao
+
+                for used_col in src_used_labels:
+                    df_out['SRC_' + used_col] = src_data[used_col] #gan src_ ten src_label cot D->I và truyền giá trị tương ứng từ các cột file csv input U,V,DX
+                    df_out['SRC_' + used_col + '_rev'] = ' '.join(self.lang_mgr.lang_models[default_lang_model].preprocess(src_data[used_col])) #lay gia tri da duoc loc du lieu qua ham tokenize_sentence
+
+                dfs.append(df_out) #them du lieu cua dict df_out vao dict dfs
+
+                used_labels |= tmp_labels #them ten cot vao tuple
+
+        dfs = pd.concat(dfs).reset_index()  #ket hop gia tri va reset gia tri index
+
+
+        def add_percentile(df): #tinh toan va them gia tri cac cot percentile
+            score_cols = df.filter(like='score_').columns #trich xuat cac cot co chuoi score_ trong ten
+            #tao cot moi voi gia tri cot score_... + 1
+            for c in score_cols:
+                insert_pos = df.columns.tolist().index(c)+1
+                new_col_name = f'percentile_{c[5:]}' #lay ten tu cot score_ , va thay score_ bang percentile_
+                size = df[c].dropna().shape[0] #naは、rank ratioの分母の対象外とする #na bị loại khỏi mẫu số tỷ lệ xếp hạng
+                #size giong len(df), loai bo cac cot co gia tri 0. Lay tong tat ca cac hang co gia tri
+                val = 1-df[c].rank(ascending=False, na_option="keep")/size #naのrankはnaとする Lay gia tri xep hang cua df[c]
+                if df[c].sum() == 0:
+                    # scoreが全てゼロの時は、percentileもゼロにする  # Khi điểm đều bằng 0, hãy đặt phần trăm thành 0
+                    val = 0
+
+                df.insert(loc=insert_pos, column=new_col_name, value=val) #them gia tri vao dict
+
+            return df    
+
+        def add_count(df):
+            score_cols = ['DrivePRO_お客さまの声_rev', 'DrivePRO_現車点検内容_rev', 'DrivePRO_修理内容/結果_rev', 'DrivePRO_根本原因:作りこみ要因_rev', 'DrivePRO_根本原因:見逃し要因_rev', 'DrivePRO_対策:作りこみ対策_rev', 'DrivePRO_対策:見逃し対策_rev']
+
+            for c in score_cols:
+                insert_pos = df.columns.tolist().index(c)+1
+                new_col_name = f'COUNT_{c}'
+                # size = df[c].dropna().shape[0] #naは、rank ratioの分母の対象外とする
+
+                # val = len(df[c].str.split())
+                val = [len(str(x).split()) for x in df[c]]
+
+                df.insert(loc=insert_pos, column=new_col_name, value=val)
+
+            return df    
+
+        def mean_wo_zero(x, top_k): #lay gia tri trung binh cua so lon nhat, lay gia tri trung binh cua so lon nhat va so lon thu 2
+            avg = 0
+            num = 0
+            for val in x.sort_values(ascending=False):
+                if (not np.isnan(val)) and val != 0:
+                    avg += val
+                    num += 1
+                    if num >= top_k:
+                        break
+
+            if num != 0:
+                avg /= num
+
+            return avg
+
+        top_k = evaluation_conf.get('avg_top_k', 2)
+
+        for k in range(1, top_k+1): #k=1,k=2
+            dfs[f'avg_top_{k}'] = dfs.filter(like='score', axis=1).apply(mean_wo_zero, top_k=k, axis=1) #gan gia tri da tinh toan vao dict co key = avg_top_k
+
+
+        dfs = add_percentile(dfs) #them gia tri percentile
+        # dfs = add_count(dfs)
+        # dfs['total_score'] = dfs.filter(like='percentile', axis=1).apply(mean_wo_zero, axis=1)
+
+        dfs = dfs.sort_values(f'avg_top_{top_k}', ascending=False) #ham sap xep theo thu tu giam dan cot avg_top_2
+
+
+        columns = list(dfs.columns)
+        sorted_columns = []
+
+        for c in ['src_id', 'des_data', 'des_id']:
+            if c in columns:
+                sorted_columns.append(c)
+                columns.remove(c)
+
+        for key in ['SRC_', 'SCORE_']:
+            changed = True
+            while changed:
+                changed = False
+                for c in columns:
+                    if c.startswith(key):
+                        sorted_columns.append(c)
+                        columns.remove(c)
+                        changed = True
+                        break
+
+        sorted_columns += columns
+        dfs = dfs.loc[:, sorted_columns]
+
+        used_labels = set([ '^' + x  + '$' for x in used_labels])
+
+        # set output_columns given by the conf
+        for a_eval in evaluation_list:
+            des_data = a_eval['des_data']
+            cols = a_eval.get('output_columns', None)
+            if cols == None:
+                continue
+            used_labels |= set([des_data + '_' + x for x in cols])
+
+
+        used_labels.add('src_id')
+        used_labels.add('des_data')
+        used_labels.add('des_id')
+        used_labels.add('percentile')
+        used_labels.add('total_score')
+        used_labels.add('avg_top_')
+        used_labels.add('SRC_')
+        used_labels.add('COUNT_')
+        used_labels_reg = '|'.join(used_labels)
+        logger.debug(f'{used_labels_reg=}')
+
+        dfs_selected = dfs.filter(regex=used_labels_reg) #trichs xuat cac phan tu co ten trong used_labels_reg
+
+        self.lang_mgr.save_cache()
+                
+        return dfs, dfs_selected #tra ve 2 dict gia tri da xu ly va luu file
+
+
+
+    def set_drive_data(self, data):
+        self.drive_data = data
+
+
+
+
+if __name__ == '__main__':
+
+    print('start')
+
+    with open('sample_logger_conf.yaml') as file:
+        conf_yaml = yaml.safe_load(file)
+
+    config.dictConfig(conf_yaml)
+
+    # qa = QualityAnalyzer()
+    # dm = DataManager()
+    # qa.set_drive_data(dm.get_drive_data())
+
+    print('done')
+
+    logger.info('test logger info')
+    logger.debug('test logger debug')
+
+    logger.info(__name__)
