@@ -1,0 +1,223 @@
+
+eval_pairs: {
+ 
+  src_data: run-qda/betalist/warranty_input_data.csv,
+  src_data_key: src_id,
+  avg_top_k: 2,
+
+  evaluation_list: [
+    {
+      des_data: DrivePRO,
+      des_data_key: 情報No.,
+      output_columns: [車系, エンジン型式, 採用日],
+      comparison_pairs: [
+        {
+          src_label: Model Code Basic,
+          des_label: 車系,
+          method: str_contain,
+        },
+        {
+          src_label: Engine Type 1 4,
+          des_label: エンジン型式,
+          method: str_contain,
+        },
+        {
+          src_label: Off Line Ymd,
+          des_label: 採用日,
+          method: date_filter,
+          inequality_sign: '<',
+        },
+        {
+          src_label: CUS_Comment,
+          des_label: お客さまの声,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: TECH_Comment,
+          des_label: お客さまの声,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: TECH_Comment,
+          des_label: 修理内容/結果,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: TECH_Comment,
+          des_label: 現車点検内容,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: OP_Code_sentence,
+          des_label: 修理内容/結果,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: OP_Code_sentence,
+          des_label: 現車点検内容,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+
+
+        # 追加
+        {
+          src_label: CUS_Comment,
+          des_label: 根本原因:作りこみ要因,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: TECH_Comment,
+          des_label: 根本原因:作りこみ要因,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: CUS_Comment,
+          des_label: 根本原因:見逃し要因,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: TECH_Comment,
+          des_label: 根本原因:見逃し要因,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+
+        {
+          src_label: CUS_Comment,
+          des_label: 対策:作りこみ対策,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: TECH_Comment,
+          des_label: 対策:見逃し対策,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: CUS_Comment,
+          des_label: 対策:作りこみ対策,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+        {
+          src_label: TECH_Comment,
+          des_label: 対策:見逃し対策,
+          method: sentence_match,
+          lang_model: fasttext,
+        },
+
+        # {
+        #   src_label: Cs Name,
+        #   des_label: 根本原因:作りこみ要因,
+        #   method: sentence_match,
+        #   lang_model: fasttext,
+        # },
+        # {
+        #   src_label: Cs Name,
+        #   des_label: 根本原因:見逃し要因,
+        #   method: sentence_match,
+        #   lang_model: fasttext,
+        # },
+        # {
+        #   src_label: Cs Name,
+        #   des_label: 対策:見逃し対策,
+        #   method: sentence_match,
+        #   lang_model: fasttext,
+        # },
+        # {
+        #   src_label: Cs Name,
+        #   des_label: 対策:作りこみ対策,
+        #   method: sentence_match,
+        #   lang_model: fasttext,
+        # },
+        # {
+        #   src_label: Ct Name,
+        #   des_label: 根本原因:作りこみ要因,
+        #   method: sentence_match,
+        #   lang_model: fasttext,
+        # },
+        # {
+        #   src_label: Ct Name,
+        #   des_label: 根本原因:見逃し要因,
+        #   method: sentence_match,
+        #   lang_model: fasttext,
+        # },
+        # {
+        #   src_label: Ct Name,
+        #   des_label: 対策:見逃し対策,
+        #   method: sentence_match,
+        #   lang_model: fasttext,
+        # },
+        # {
+        #   src_label: Ct Name,
+        #   des_label: 対策:作りこみ対策,
+        #   method: sentence_match,
+        #   lang_model: fasttext,
+        # },
+
+      ],
+    },
+
+
+    # {
+    #   des_data: FukenList,
+    #   des_data_key: NO.,
+    #   output_columns: [車両, ｴﾝｼﾞﾝ],
+    #   comparison_pairs: [
+    #     {
+    #       src_label: Model Code Basic,
+    #       des_label: 車両,
+    #       method: str_contain,
+    #     },
+    #     {
+    #       src_label: Engine Type,
+    #       des_label: ｴﾝｼﾞﾝ,
+    #       method: str_filter,
+    #     },
+    #     {
+    #       src_label: TECH_Comment,
+    #       des_label: 原因,
+    #       method: sentence_match,
+    #     },
+    #     {
+    #       src_label: TECH_Comment,
+    #       des_label: 対策,
+    #       method: sentence_match,
+    #     },
+    #     {
+    #       src_label: TECH_Comment,
+    #       des_label: 備考,
+    #       method: sentence_match,
+    #     },
+    #     {
+    #       src_label: OP_Code_sentence,
+    #       des_label: 原因,
+    #       method: sentence_match,
+    #     },
+    #     {
+    #       src_label: OP_Code_sentence,
+    #       des_label: 対策,
+    #       method: sentence_match,
+    #     },
+    #     {
+    #       src_label: OP_Code_sentence,
+    #       des_label: 備考,
+    #       method: sentence_match,
+    #     },
+    #   ],
+    # },
+
+  ]
+
+
+}
