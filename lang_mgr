@@ -1,0 +1,204 @@
+import os
+from tqdm.auto import tqdm
+
+is_fasttext_available = False
+try:
+    from lang_model_fasttext import LangModelFasttext
+    is_fasttext_available = True
+except:
+    pass
+
+from lang_model_word2vec import LangModelWord2Vec
+
+
+from fta import FTA
+from logging import getLogger, config
+logger = getLogger(os.path.basename(__file__))
+
+
+class LangManager:
+
+    def __init__(self, name, data_mgr, lang_conf, remove_verb, abbs_dict=None, clear_cache=True) -> None:
+        '''
+        言語モデル（fasttext、およびword2vec）を管理するモジュールの初期化する。
+
+
+        Parameters
+        ----------
+        name: string
+            ドメインの名前。この名前が各中間ファイルのprefixになる。（この名前を変えておくことで、区別可能）
+
+        data_mgr: DataManager
+            データマネージャーを指定。
+            言語モデルの学習の際にアクセスされる。
+
+        remove_verb: bool
+            適合判定の際に、動詞を除去するかを指定。
+
+        abbs_dict: yaml, default None
+            略語辞書を使う場合、その設定を指定。
+
+        clear_cache: bool, default True        
+            前処理結果のキャッシュをクリアするか否かを指定する。
+            クリアしない方が一般に高速だが、コードの変更があった際に結果に反映されないことがる為、Trueの方が安全。
+
+        ----------
+
+        '''
+
+        self.data_mgr = data_mgr
+        self.conf = lang_conf
+        self.name = name
+        self.bin_dir = lang_conf.get('bin_dir', 'bin')
+
+        stop_words = lang_conf['stop_words']
+        domain_common_words = lang_conf['domain_common_words']
+        meaningless_words_reg = lang_conf['meaningless_words_reg']
+
+        abbs_dict = None # 後回し
+
+        self.lang_models = {}
+
+        if is_fasttext_available:
+            self.lang_models['fasttext'] = LangModelFasttext(
+                                                domain_name=name,
+                                                stop_words=stop_words,
+                                                domain_common_words=domain_common_words,
+                                                meaningless_words_reg=meaningless_words_reg,
+                                                remove_verb=remove_verb,
+                                                abbs_dict=abbs_dict,
+                                                clear_cache=clear_cache,
+                                                )
+
+        else:
+            self.lang_models['word2vec'] = LangModelWord2Vec(
+                                                domain_name=name,
+                                                stop_words=stop_words,
+                                                domain_common_words=domain_common_words,
+                                                meaningless_words_reg=meaningless_words_reg,
+                                                remove_verb=remove_verb,
+                                                abbs_dict=abbs_dict,
+                                                clear_cache=clear_cache,
+                                                )
+        
+
+    def set_domain_common_words(self, domain_common_words):
+        for model in self.lang_models:
+            model.domain_common_words = domain_common_words
+
+
+    def save_cache(self):
+        for m in self.lang_models.values():
+            m.save_cache()
+
+
+    def cal_ascii_ratio(self, text):
+
+        word_list = list(text.replace(' ',''))
+        if word_list == []:
+            return 0
+
+        is_ascii = list(map(lambda x:x.isascii() , word_list))
+        return sum(is_ascii)/len(word_list)
+
+
+    def get_default_lang_model(self):
+
+        if is_fasttext_available:
+            return 'fasttext'
+        else:
+            return 'word2vec'
+
+
+    def remove_non_ascii(self, text):
+        word_list = text.split()
+        revised_word_list = []
+        for word in word_list:
+            if word.isascii():
+                revised_word_list.append(word)
+        return ' '.join(revised_word_list)
+
+
+    def train(self, re_train=False):
+        '''
+        単語の分散表現を学習する。
+        Parameters:
+        ------------
+        re_train: bool, default False
+            Falseの場合、学習済みのモデルが保存されている場合はそのモデルを読み込む。（学習しないため高速）
+            Trueの場合、学習済みのモデルが保存されているか否かに関わらず学習する。学習の元データが追加・変更された場合などはTrueニスる必要がある。
+        '''
+        logger.debug('train: conf contents:')
+        logger.debug(self.conf['lang_model_data'])
+        # 言語モデルの学習に使う文を収集
+        sentences = set()
+        for a_data in self.conf['lang_model_data']:
+            name = a_data['name']
+            df = self.data_mgr.data[name]
+
+            for a_col in a_data['columns']:
+                for s in list(df[a_col].values):
+                    if type(s) is str:
+                        if self.cal_ascii_ratio(s) > 0.9:
+                            sentences.add(self.remove_non_ascii(s))
+        logger.info(f'the number of sentences for learning: {len(sentences)}')
+        # 各言語モデルで、tokenizeや学習を行う
+        for lang_model_name, lang_model in self.lang_models.items():
+
+            bin_name = os.path.join(self.bin_dir, self.name + '_'+ lang_model_name + '_lang_model.bin')
+            bin_exists = os.path.exists(bin_name)
+
+            if (not bin_exists) or re_train == True:
+                logger.info(f'tokenize start for {lang_model_name}')
+                data_for_model = []
+                for s in tqdm(sentences):
+                    tokens = lang_model.tokenize_sentence(s, mode='lemma')
+                    if tokens == []:
+                        continue
+                    data_for_model.append(tokens)
+                logger.info('tokenize done')
+                logger.info(f'learn start for {lang_model_name}')
+                lang_model.learn_with_tokens(data_for_model)
+                lang_model.save_model(bin_name)
+                logger.info('learn done')
+            else:
+                logger.info(f'learned model exists, and load ({lang_model_name})')
+                lang_model.load_model(bin_name)
+                
+
+    def most_similar(self, w, topn=10):
+        if is_fasttext_available:
+            return self.lang_models['fasttext'].most_similar(w, topn=topn)
+        else:
+            return self.lang_models['word2vec'].most_similar(w, topn=topn)
+
+from data_mgr import DataManager
+import yaml
+
+
+if __name__ == '__main__':
+
+    print('LangModel')
+
+    with open('sample_logger_conf.yaml') as file:
+        conf_yaml = yaml.safe_load(file)
+
+    config.dictConfig(conf_yaml)
+
+
+    with open('sample_dm_conf.yaml') as file:
+        dm_yaml = yaml.safe_load(file)
+
+    print(dm_yaml['des_data_list'])
+
+    dm = DataManager(dm_yaml)
+
+
+    with open('sample_lang_conf.yaml') as file:
+        lang_conf_yaml = yaml.safe_load(file)
+
+    lang_conf = lang_conf_yaml['lang_conf']
+    lang_mgr = LangManager(dm, lang_conf)
+
+    lang_mgr.train()
+
